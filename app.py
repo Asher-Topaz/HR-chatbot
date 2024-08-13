@@ -3,10 +3,14 @@ from langchain.text_splitter import CharacterTextSplitter
 import os
 from pinecone import Pinecone, ServerlessSpec
 from langchain.chains import ConversationChain
+from langchain.chains import create_retrieval_chain
 from langchain.vectorstores import Pinecone as LangchainPinecone
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.chains import RetrievalQA
 from langchain.chat_models import ChatOpenAI
+
 from langchain.chains.conversation.memory import ConversationBufferMemory
 import streamlit as st
 from dotenv import load_dotenv
