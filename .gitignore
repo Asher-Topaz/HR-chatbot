@@ -160,3 +160,4 @@ cython_debug/
 #.idea/
 
 # sample-authentication-697a4-firebase-adminsdk-nsvjq-227e604dca.json
+*firebase-adminsdk*.json
