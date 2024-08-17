@@ -7,7 +7,7 @@ import os
 
 # Initialize Firebase (if not already initialized)
 if not firebase_admin._apps:
-    cred = credentials.Certificate('sample-authentication-697a4-firebase-adminsdk-nsvjq-5eef284dc1.json')
+    cred = credentials.Certificate('sample-authentication-697a4-firebase-adminsdk-nsvjq-227e604dca.json')
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
@@ -42,6 +42,10 @@ def login_user(username_or_email, password):
             user_data = user_docs[0].to_dict()
             email = user_data['email']
             user = auth.get_user_by_email(email)
+
+        # Store user ID in session state
+        st.session_state.user_id = user.uid
+        st.session_state.logged_in = True
 
         return True, "Login successful!"
     except Exception as e:

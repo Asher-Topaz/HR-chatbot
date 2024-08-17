@@ -18,6 +18,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains.conversation.memory import ConversationBufferMemory
 from langchain.chains.conversation.base import ConversationChain
 from langchain.chains.summarize import load_summarize_chain
+from langchain.schema import Document
 from openai import OpenAIError
 from datetime import datetime
 
@@ -30,7 +31,7 @@ PINECONE_ENV = os.getenv('PINECONE_ENV')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 # Initialize Firebase
-cred = credentials.Certificate("sample-authentication-697a4-firebase-adminsdk-nsvjq-5eef284dc1.json")
+cred = credentials.Certificate("sample-authentication-697a4-firebase-adminsdk-nsvjq-227e604dca.json")
 #firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -84,11 +85,17 @@ def embedding_db():
     doc_db = LangchainPinecone.from_documents(docs_split, embeddings, index_name=index_name)
     return doc_db
 
-# Summarize context if too long
 def summarize_context(conversation):
     if len(conversation.memory.chat_memory.messages) > 3:  # Adjust as needed
         summarizer = load_summarize_chain(conversation.llm)
-        context_summary = summarizer.invoke(conversation.memory.chat_memory.messages)
+        
+        # Convert chat messages to documents
+        docs = [
+            Document(page_content=msg.content)
+            for msg in conversation.memory.chat_memory.messages
+        ]
+        
+        context_summary = summarizer.invoke(docs)
         conversation.memory.chat_memory.clear()
         conversation.memory.save_context({"input": "Context summary"}, {"output": context_summary['output_text']})
 
@@ -107,8 +114,8 @@ conversation, doc_db = initialize_conversation()
 
 # Define the prompt template for the HR chatbot
 system_prompt = (
-    "You are an HR chatbot providing location-specific business information. "
-    "Cite sources with URLs. Keep answers professional and concise. "
+    "You are an HR chatbot providing location-specific business information."
+    "Cite your sources with clickable URLs. Keep answers professional and concise. "
     "Use the following context to answer the question: {context}"
 )
 
@@ -124,7 +131,7 @@ question_answer_chain = create_stuff_documents_chain(conversation.llm, prompt)
 # Cache for 10 minutes
 @rate_limit(max_per_minute=10)
 @st.cache_data(ttl=600)
-def retrieval_answer(query, country,state,use_case):
+def retrieval_answer(query, country, state, use_case):
     max_retries = 5
     retry_delay = 1
 
@@ -132,8 +139,9 @@ def retrieval_answer(query, country,state,use_case):
         try:
             # Construct a more detailed query
             detailed_query = f"For a {use_case} in {state}, {country}: {query}"
+            
             # Trim user query to fit within a reasonable length
-            trimmed_query = query[:500]  # Reduce from 1000 to 500
+            trimmed_query = detailed_query[:500]  # Reduce from 1000 to 500
 
             # Summarize context if needed
             summarize_context(conversation)
@@ -157,11 +165,11 @@ def retrieval_answer(query, country,state,use_case):
             answer = result["answer"]
 
             # Truncate the answer if it's too long
-            if len(answer) > 1000:
-                answer = answer[:1000] + "... (truncated)"
+            if len(answer) > 2000:
+                answer = answer[:2000] + "... (truncated)"
 
             # Save context and answer
-            conversation.memory.save_context({"input": query}, {"output": answer})
+            conversation.memory.save_context({"input": detailed_query}, {"output": answer})
 
             return answer
 
@@ -223,7 +231,9 @@ def app():
     if st.sidebar.button("New Chat Session"):
         st.session_state.chat_id = f"session_{datetime.utcnow().isoformat()}"
         st.session_state.history = []
-        st.sidebar.success("Started a new chat session.")
+        st.session_state.country = None
+        st.session_state.state = None
+        st.session_state.use_case = None
         st.experimental_rerun()  # Force a rerun to refresh the page and clear history
 
     # Load existing sessions
@@ -235,97 +245,64 @@ def app():
             st.session_state.history = doc.to_dict().get("history", [])
 
     # Display chat session list
-    sessions = db.collection("chats").stream()
-    session_list = [(doc.id, doc.to_dict().get("created_at", "")) for doc in sessions]
-    if session_list:
-        selected_session_id = st.sidebar.selectbox(
-            "Select a session",
-            [f"{session[1]} - {session[0]}" for session in session_list] + ["Start New Session"],
-            format_func=lambda x: x if x != "Start New Session" else "Start New Session"
-        )
-        if selected_session_id == "Start New Session":
-            st.session_state.chat_id = f"session_{datetime.utcnow().isoformat()}"
-            st.session_state.history = []
-            st.sidebar.success("Started a new chat session.")
-            st.experimental_rerun()  # Force a rerun to refresh the page and clear history
-        else:
-            selected_session_id = selected_session_id.split(" - ")[1]
-            st.session_state.chat_id = selected_session_id
-            doc_ref = db.collection("chats").document(st.session_state.chat_id)
-            doc = doc_ref.get()
-            if doc.exists:
-                st.session_state.history = doc.to_dict().get("history", [])
+    if "user_id" in st.session_state:
+        user_id = st.session_state["user_id"]
+        chat_sessions = db.collection("chats").where("user_id", "==", user_id).stream()
 
-    # Sidebar for dropdowns and input fields
-    with st.sidebar:
-        # Dropdown for country selection
-        countries = fetch_countries()
-        selected_country = st.selectbox(
-            "What country would you like to inquire about?",
-            countries,
-            key="country"
+        for session in chat_sessions:
+            session_id = session.id
+            session_data = session.to_dict()
+            session_date = session_data.get("date", "")
+            if st.sidebar.button(f"Session: {session_date}", key=session_id):
+                st.session_state.chat_id = session_id
+                st.session_state.history = session_data.get("history", [])
+                st.experimental_rerun()  # Force rerun to load selected session history
+
+    # Dropdown and input forms for the query
+    st.session_state.country = st.selectbox(
+        "What country would you like to inquire about?",
+        fetch_countries(),
+        key="country_select",
+    )
+
+    if st.session_state.country:
+        st.session_state.state = st.selectbox(
+            "Perfect, which specific city do you need help with?",
+            fetch_states(st.session_state.country),
+            key="state_select",
         )
 
-        # Dropdown for state/province selection
-        if selected_country:
-            states = fetch_states(selected_country)
-            selected_state = st.selectbox(
-                "Perfect, which specific city do you need help with?",
-                states,
-                key="state"
-            )
+    st.session_state.use_case = st.text_input("What size is your business and what sector?")
 
-        # Business size and sector input
-        if selected_country and selected_state:
-            use_case = st.text_input("What size is your business and what sector?")
-            if use_case:
-                st.session_state.use_case = use_case
-
-    # Main section for displaying chat history and input query
-    if st.session_state.history:
-        for entry in st.session_state.history:
-            if entry.get("role") == "bot":
+    # Chat window display
+    for entry in st.session_state.history[::-1]:  # Reverse the order to display newest at the top
+        if 'user' in entry and 'bot' in entry:
+            if entry['user'] and entry['bot']:  # Only print if both user and bot entries exist
                 st.markdown(
-                    f"""
-                    <div style="background-color: transparent; padding: 10px;">
-                        <p style="color: darkyellow; font-weight: bold;">Chatbot:</p>
-                        <p style="color: white;">{entry.get("message")}</p>
-                    </div>
-                    """,
+                    f"<div style='border-radius: 8px; background-color: #333; color: white; padding: 10px; margin-bottom: 5px; float: right; width: fit-content; max-width: 70%;'>"
+                    f"<b>User:</b> {entry['user']}</div>",
                     unsafe_allow_html=True,
                 )
-            else:
                 st.markdown(
-                    f"""
-                    <div style="background-color: grey; padding: 10px; border-radius: 5px;">
-                        <p style="color: darkpurple; font-weight: bold;">User:</p>
-                        <p style="color: white;">{entry.get("message")}</p>
-                    </div>
-                    """,
+                    f"<div style='border-radius: 8px; background-color: black; color: white; padding: 10px; margin-bottom: 5px; width: fit-content; max-width: 70%;'>"
+                    f"<b>Bot:</b> {entry['bot']}</div>",
                     unsafe_allow_html=True,
                 )
 
-    # Question search bar
-    query = st.text_input("Ask a question:")
-    if query:
-        answer = retrieval_answer(query)
-        st.session_state.history.append({"role": "user", "message": query})
-        st.session_state.history.append({"role": "bot", "message": answer})
-        st.markdown(
-            f"""
-            <div style="background-color: transparent; padding: 10px;">
-                <p style="color: darkyellow; font-weight: bold;">Chatbot:</p>
-                <p style="color: white;">{answer}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    # Query input and submission
+    user_query = st.text_input("Enter your query here...")
 
-    # Save conversation to Firebase
-    if st.session_state.get("chat_id"):
+    if user_query and st.session_state.chat_id:
+        with st.spinner("Processing..."):
+            response = retrieval_answer(user_query, st.session_state.country, st.session_state.state, st.session_state.use_case)
+        st.session_state.history.append({"user": user_query, "bot": response})
+
+        # Save history to Firebase
         db.collection("chats").document(st.session_state.chat_id).set(
-            {"history": st.session_state.history, "created_at": datetime.utcnow().isoformat()}
+            {"user_id": st.session_state["user_id"], "history": st.session_state.history, "date": datetime.utcnow()}
         )
+        # Clear the input field
+        st.experimental_rerun()
 
-if __name__ == "__main__":
-    app()
+# Execute the app function to start the chatbot
+app()
