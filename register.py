@@ -7,7 +7,7 @@ import os
 
 # Initialize Firebase (if not already initialized)
 if not firebase_admin._apps:
-    cred = credentials.Certificate('sample-authentication-697a4-firebase-adminsdk-nsvjq-227e604dca.json')
+    cred = credentials.Certificate('')
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
